@@ -339,7 +339,7 @@ grant execute on function guild_delete(text,text)  to anon;</div>
 
 <script>
 /* ===== Hardcode these two if you'd rather not use the in-page form ===== */
-const HARDCODED = { url:"", anonKey:"" };
+const HARDCODED = { url:"https://gtshqbnawruhprafkpyc.supabase.co", anonKey:"sb_publishable_S6UQMOJrlQ03wW_g4nky4Q_BFCF3MTM" };
 /* ====================================================================== */
 
 const PROFESSIONS = {
@@ -373,7 +373,9 @@ function sb(path,opts={}){
   // Legacy anon keys are JWTs (start with "eyJ") and use a Bearer header.
   // New publishable keys (sb_publishable_…) must NOT be sent as Bearer.
   if(/^eyJ/.test(CONFIG.anonKey)) h["Authorization"]=`Bearer ${CONFIG.anonKey}`;
-  return fetch(`${CONFIG.url}/rest/v1/${path}`,{ ...opts, headers:h });
+  // Also pass the key as a query param (mirrors a direct REST call) for max compatibility.
+  const sep = path.includes("?") ? "&" : "?";
+  return fetch(`${CONFIG.url}/rest/v1/${path}${sep}apikey=${encodeURIComponent(CONFIG.anonKey)}`,{ ...opts, headers:h });
 }
 function rpc(fn,body){ return sb(`rpc/${fn}`,{method:"POST",body:JSON.stringify(body)}); }
 
@@ -666,7 +668,7 @@ $("#copySql").addEventListener("click",()=>{
   if(saved){
     CONFIG={url:saved.url.replace(/\/+$/,""),anonKey:saved.anonKey}; MODE="supabase";
     try{ roster=await Backend.list(); setStatus("supabase","Connected · synced"); await tryRememberedPass(); startPoll(); }
-    catch(e){ MODE="demo"; PASS=""; setStatus("err","Connection failed — using demo mode"); }
+    catch(e){ console.error("Outland Forge: connect failed on load —",e); MODE="demo"; PASS=""; setStatus("err","Connection failed — using demo mode"); }
   }else{
     setStatus("demo","Demo mode"); $("#demoBanner").hidden=false;
   }
