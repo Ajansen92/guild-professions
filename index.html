@@ -176,7 +176,7 @@
     </select>
     <div class="spacer"></div>
     <button class="iconbtn" id="refreshBtn" title="Refresh roster">↻ Refresh</button>
-    <button class="iconbtn" id="unlockBtn" hidden>🔒 Unlock editing</button>
+    <button class="iconbtn" id="unlockBtn" hidden>🔒 Officer tools</button>
     <button class="btn btn-primary" id="addBtn">+ Add character</button>
   </div>
 
@@ -197,7 +197,7 @@
 
   <footer class="note">
     Two primary professions per character · specializations for Alchemy, Blacksmithing, Engineering, Leatherworking &amp; Tailoring.<br>
-    When connected, anyone can <span class="felword">view and search</span> the roster · adding or removing entries needs the guild passphrase.
+    Anyone can <span class="felword">add their character</span> · editing or removing entries needs the officer passphrase.
   </footer>
 </div>
 
@@ -275,6 +275,17 @@ returns boolean language sql security definer set search_path = public as $$
   select pass is not distinct from 'changeme';
 $$;
 
+-- Anyone may ADD a new character (no passphrase). Insert-only: cannot edit existing rows.
+create or replace function guild_add(c jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if coalesce(c->>'name','') = '' then raise exception 'Name required'; end if;
+  insert into characters (id,name,cls,profs,notes,updated)
+  values (c->>'id', c->>'name', c->>'cls',
+          coalesce(c->'profs','[]'::jsonb), c->>'notes', (c->>'updated')::bigint)
+  on conflict (id) do nothing;
+end; $$;
+
 create or replace function guild_upsert(pass text, c jsonb)
 returns void language plpgsql security definer set search_path = public as $$
 begin
@@ -295,12 +306,13 @@ begin
 end; $$;
 
 grant execute on function guild_check(text)        to anon;
+grant execute on function guild_add(jsonb)         to anon;
 grant execute on function guild_upsert(text,jsonb) to anon;
 grant execute on function guild_delete(text,text)  to anon;</div>
       </li>
       <li>Go to <b>Project Settings → API Keys</b> and copy the <b>Project URL</b> and your <b>publishable key</b> (<code>sb_publishable_…</code>) — or the legacy <b>anon / public</b> key if that's what your project shows. Both work here. Never use the <b>secret</b> or <b>service_role</b> key. Paste the URL and key into the fields below.</li>
     </ol>
-    <div class="note-box">Everyone can view and search the roster. Adding or removing a character requires the guild passphrase — and that's enforced inside the database, so it can't be bypassed from the browser. Share the passphrase with officers (or the whole guild) as you see fit.</div>
+    <div class="note-box">Anyone can view, search, and <b>add</b> a character. <b>Editing and removing</b> require the officer passphrase, enforced inside the database. Share the passphrase with your officers only.</div>
     <div class="field">
       <label for="cfgUrl">Project URL</label>
       <input type="text" id="cfgUrl" placeholder="https://abcdxyz.supabase.co" autocomplete="off">
@@ -321,10 +333,10 @@ grant execute on function guild_delete(text,text)  to anon;</div>
 <!-- Unlock modal -->
 <div class="overlay" id="unlock">
   <div class="modal" style="max-width:420px" role="dialog" aria-modal="true" aria-labelledby="unlockTitle">
-    <h2 id="unlockTitle">Unlock editing</h2>
-    <p class="hint">Enter the guild passphrase to add or remove characters. Viewing stays open without it.</p>
+    <h2 id="unlockTitle">Officer tools</h2>
+    <p class="hint">Enter the officer passphrase to edit or remove entries. Anyone can add a character without it.</p>
     <div class="field">
-      <label for="passInput">Guild passphrase</label>
+      <label for="passInput">Officer passphrase</label>
       <input type="password" id="passInput" placeholder="••••••••" autocomplete="off">
       <div class="err" id="passErr"></div>
     </div>
@@ -387,6 +399,11 @@ const Backend = {
     if(!r.ok) throw new Error("load "+r.status);
     return await r.json();
   },
+  async add(c){
+    if(MODE!=="supabase"){ mem.set(c.id,c); return; }
+    const r = await rpc("guild_add",{c});
+    if(!r.ok) throw new Error("add "+r.status);
+  },
   async put(c){
     if(MODE!=="supabase"){ mem.set(c.id,c); return; }
     const r = await rpc("guild_upsert",{pass:PASS,c});
@@ -431,15 +448,16 @@ function setStatus(mode,msg){
 /* ---------- lock UI ---------- */
 function applyLockUI(){
   const addBtn=$("#addBtn"), unlockBtn=$("#unlockBtn"), pill=$("#lockPill");
-  if(MODE!=="supabase"){            // demo mode — no lock concept
+  if(MODE!=="supabase"){            // demo mode — everything open
     addBtn.hidden=false; unlockBtn.hidden=true; pill.hidden=true; return;
   }
-  if(PASS){                          // unlocked
-    addBtn.hidden=false; unlockBtn.hidden=true;
-    pill.hidden=false; pill.className="lockpill open"; pill.textContent="🔓 Editing unlocked · lock";
-  }else{                             // locked (view-only)
-    addBtn.hidden=true; unlockBtn.hidden=false;
-    pill.hidden=false; pill.className="lockpill locked"; pill.textContent="🔒 View-only";
+  addBtn.hidden=false;               // anyone may add a character
+  if(PASS){                          // officer mode
+    unlockBtn.hidden=true;
+    pill.hidden=false; pill.className="lockpill open"; pill.textContent="🔓 Officer mode · lock";
+  }else{                             // members can add; officer tools locked
+    unlockBtn.hidden=false;
+    pill.hidden=false; pill.className="lockpill locked"; pill.textContent="🔒 Officer tools locked";
   }
 }
 
@@ -486,9 +504,7 @@ function renderGrid(){
   const list=roster.filter(passesFilter).sort((a,b)=>(a.name||"").localeCompare(b.name||""));
   $("#resultsCount").textContent = roster.length ? `Showing ${list.length} of ${roster.length}` : "";
   if(!roster.length){
-    const cta = canEdit()
-      ? `<button class="btn btn-primary" onclick="openModal()">+ Add the first character</button>`
-      : `<button class="btn" onclick="openUnlock()">🔒 Unlock editing to add</button>`;
+    const cta = `<button class="btn btn-primary" onclick="openModal()">+ Add the first character</button>`;
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><h2>The roster is empty</h2>
       <p>Add your first crafter to start mapping the guild's profession coverage.</p>${cta}</div>`; return;
   }
@@ -515,7 +531,8 @@ function closeModal(){ $("#overlay").classList.remove("open"); editingId=null; }
 function readProf(ps,ss,ks){ const name=ps.value; if(!name) return null; const skill=ks.value?Math.max(1,Math.min(375,parseInt(ks.value,10)||0)):null; return {name,spec:ss.value||"",skill}; }
 
 async function save(){
-  if(!canEdit()){ openUnlock(); return; }
+  const isEdit=!!editingId;
+  if(isEdit && !canEdit()){ openUnlock(); return; }   // editing an existing entry = officer only
   const name=$("#fName").value.trim();
   if(!name){ $("#nameErr").textContent="A character needs a name."; return; }
   const p1=readProf($("#fProf1"),$("#fSpec1"),$("#fSkill1")), p2=readProf($("#fProf2"),$("#fSpec2"),$("#fSkill2"));
@@ -523,8 +540,8 @@ async function save(){
   const c={ id:editingId||uid(), name, cls:$("#fClass").value||"", profs:[p1,p2].filter(Boolean), notes:$("#fNotes").value.trim(), updated:Date.now() };
   const i=roster.findIndex(x=>x.id===c.id); if(i>=0) roster[i]=c; else roster.push(c);
   closeModal(); renderAll();
-  try{ await Backend.put(c); }
-  catch(e){ console.error(e); await writeFailed(); }
+  try{ if(isEdit) await Backend.put(c); else await Backend.add(c); }
+  catch(e){ console.error(e); await writeFailed(isEdit); }
 }
 async function removeChar(id){
   if(!canEdit()){ openUnlock(); return; }
@@ -534,12 +551,16 @@ async function removeChar(id){
   try{ await Backend.remove(id); }
   catch(e){ console.error(e); await writeFailed(); }
 }
-async function writeFailed(){
-  // most likely the passphrase is wrong/out of date — relock and resync
-  alert("That change didn't save. The guild passphrase may be wrong or was changed. Please unlock again.");
-  PASS=""; clearSavedPass();
+async function writeFailed(isEdit){
+  if(isEdit){
+    alert("That change didn't save. The officer passphrase may be wrong or was changed. Please unlock again.");
+    PASS=""; clearSavedPass();
+  }else{
+    alert("That didn't save — there may have been a connection hiccup. Please try adding again.");
+  }
   try{ roster=await Backend.list(); }catch(e){}
-  renderAll(); openUnlock();
+  renderAll();
+  if(isEdit) openUnlock();
 }
 
 /* ---------- filters setup ---------- */
